@@ -224,8 +224,7 @@ def _run_tma_raw_case() -> None:
     target = target_storage[:, :n_size]
     scratch = torch.zeros(1, dtype=torch.int32, device="cuda")
     triton.set_allocator(_cuda_byte_allocator)
-    _tma_raw_kernel[(2, )](target, scratch, counter, m_size, n_size, row_idx, col_idx, target.stride(0), BLOCK=block,
-                           num_warps=4)
+    _tma_raw_kernel[(2, )](target, scratch, counter, m_size, n_size, row_idx, col_idx, target.stride(0), BLOCK=block)
 
 
 @run_with_gsan
@@ -244,7 +243,7 @@ def _run_host_tma_war_case() -> None:
     target_desc = TensorDescriptor.from_tensor(target, [block, block])
     scratch_desc = TensorDescriptor.from_tensor(scratch, [block, block])
     counter = torch.zeros(1, dtype=torch.int32, device="cuda")
-    _host_tma_war_kernel[(2, )](target, target_desc, scratch_desc, counter, row_idx, col_idx, target.stride(0), num_warps=4)
+    _host_tma_war_kernel[(2, )](target, target_desc, scratch_desc, counter, row_idx, col_idx, target.stride(0))
 
 
 @run_with_gsan
@@ -265,8 +264,8 @@ def _run_host_tma_gather_war_case() -> None:
     target_desc = TensorDescriptor.from_tensor(target, [1, block_y])
     scratch = torch.zeros((block_x, block_y), dtype=torch.int32, device="cuda")
     counter = torch.zeros(1, dtype=torch.int32, device="cuda")
-    _host_tma_gather_war_kernel[(2, )](target, target_desc, x_offsets, scratch, counter, row_idx, y_offset, target.stride(0),
-                                       scratch.stride(0), scratch.stride(1), BLOCK_X=block_x, num_warps=4)
+    _host_tma_gather_war_kernel[(2, )](target, target_desc, x_offsets, scratch, counter, row_idx, y_offset,
+                                       target.stride(0), scratch.stride(0), scratch.stride(1), BLOCK_X=block_x)
 
 
 @run_with_gsan
@@ -288,8 +287,8 @@ def _run_host_tma_scatter_war_case() -> None:
     src = torch.arange(1, block_x * block_y + 1, dtype=torch.int32, device="cuda").reshape(block_x, block_y)
     scratch = torch.zeros(1, dtype=torch.int32, device="cuda")
     counter = torch.zeros(1, dtype=torch.int32, device="cuda")
-    _host_tma_scatter_war_kernel[(2, )](target, target_desc, x_offsets, src, src.stride(0), src.stride(1), scratch, counter,
-                                        row_idx, y_offset, target.stride(0), BLOCK_X=block_x, num_warps=4)
+    _host_tma_scatter_war_kernel[(2, )](target, target_desc, x_offsets, src, src.stride(0), src.stride(1), scratch,
+                                        counter, row_idx, y_offset, target.stride(0), BLOCK_X=block_x)
 
 
 @run_with_gsan
