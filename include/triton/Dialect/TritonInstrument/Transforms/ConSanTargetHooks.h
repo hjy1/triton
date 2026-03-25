@@ -14,10 +14,12 @@ namespace mlir::triton::instrument {
 struct MemEffectsOpInfo {
   // Frontier: snapshot thread-visible frontier into barrier tracking.
   // EffectWrites: track only buffers written by op effects.
+  // PendingAsyncWrites: track buffers with outstanding async copies.
   // None: perform no visibility tracking for the barrier.
   enum class BarrierTrackingMode {
     Frontier,
     EffectWrites,
+    PendingAsyncWrites,
     None,
   };
   struct Effects {

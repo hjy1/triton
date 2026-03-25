@@ -173,6 +173,12 @@ public:
                                             Value buf, uint32_t length,
                                             Value pred, MemType memType,
                                             Operation *insertPoint);
+  // trackOutstandingCommitsForBarrier: mark all buffers with outstanding
+  // commits for the thread as tracked by a barrier, then clear those commits.
+  void createTrackOutstandingCommitsForBarrierCall(
+      ImplicitLocOpBuilder &b, Value mbar, int thread, Value pred,
+      CommitKind::Kind commitKind, MemType memType, Operation *insertPoint,
+      Value recipientCTAs);
   // clearBarrierWriteTracking: clear all write tracking associated with the
   // given barrier row.
   void createClearBarrierWriteTrackingCall(ImplicitLocOpBuilder &b, Value mbar,

@@ -1685,6 +1685,93 @@ void FunctionBuilder::createTrackBarrierWriteForBufferCall(
       });
 }
 
+void FunctionBuilder::createTrackOutstandingCommitsForBarrierCall(
+    ImplicitLocOpBuilder &b, Value mbar, int thread, Value pred,
+    CommitKind::Kind commitKind, MemType memType, Operation *insertPoint,
+    Value recipientCTAs) {
+  if (auxData.barriers.empty() || auxData.commits[commitKind].empty() ||
+      auxData.writeTracking[(int)memType].empty()) {
+    return;
+  }
+  if (!pred)
+    pred = arith::ConstantIntOp::create(b, 1, 1);
+  Value barriersVal = auxData.barriers.at(insertPoint).value;
+  auto barriersType =
+      cast<RankedTensorType>(auxData.barriers.at(insertPoint).type);
+  ValueType outstandingCommits = auxData.commits[commitKind].at(insertPoint);
+  auto commitsType = cast<RankedTensorType>(outstandingCommits.type);
+  Value writeTrackingVal =
+      auxData.writeTracking[(int)memType].at(insertPoint).value;
+  auto writeTrackingType = cast<RankedTensorType>(
+      auxData.writeTracking[(int)memType].at(insertPoint).type);
+  Value threadVal = arith::ConstantIntOp::create(b, thread, 32);
+  uint32_t length = getMemDescLength(mbar);
+  Value mbarOffset = tti::ExperimentalMemDescToI32Op::create(b, mbar);
+  Value lengthVal = arith::ConstantIntOp::create(b, length, 32);
+  SmallVector<Value> args = {
+      mbarOffset,       lengthVal,    pred,
+      threadVal,        barriersVal,  outstandingCommits.value,
+      writeTrackingVal, recipientCTAs};
+  createCallToCachedFunction(
+      b, "track_outstanding_commits_for_barrier", args,
+      /*assertInfo=*/std::nullopt,
+      {barriersType, commitsType, writeTrackingType, (uint64_t)memType},
+      [barriersType, commitsType, writeTrackingType](ImplicitLocOpBuilder &fb,
+                                                     Block *entryBlock) {
+        Value mbarOffset = entryBlock->getArgument(0);
+        Value lengthVal = entryBlock->getArgument(1);
+        Value pred = entryBlock->getArgument(2);
+        Value threadVal = entryBlock->getArgument(3);
+        Value barriers = entryBlock->getArgument(4);
+        Value outstandingCommitsPtr = entryBlock->getArgument(5);
+        Value writeTrackingPtr = entryBlock->getArgument(6);
+        Value recipientCTAs = entryBlock->getArgument(7);
+
+        auto [prevBlock, ifBlock, thenBlock] = createIfBlock(fb, pred);
+        fb.setInsertionPointToStart(ifBlock);
+
+        Value outstandingCommits = tti::createLoadScratchMemory(
+            fb, fb.getLoc(), outstandingCommitsPtr, commitsType);
+        Value writeTracking = tti::createLoadScratchMemory(
+            fb, fb.getLoc(), writeTrackingPtr, writeTrackingType);
+        Value descriptor = createBufferDescriptor(fb, mbarOffset, lengthVal);
+        Value barriersEqBar =
+            createCmpIntTensorScalar(fb, barriers, descriptor);
+        barriersEqBar =
+            convertAndBroadcast(fb, barriersEqBar, {0, 2}, writeTrackingType);
+
+        Value zeroCommits =
+            tti::createConstIntTensor(fb, fb.getLoc(), 0, commitsType);
+        Value pendingCommits = arith::CmpIOp::create(
+            fb, arith::CmpIPredicate::ne, outstandingCommits, zeroCommits);
+        Value threadColumnMask = createColumnMask(fb, threadVal, commitsType);
+        pendingCommits =
+            arith::AndIOp::create(fb, pendingCommits, threadColumnMask);
+
+        Value pendingBuffers = reduceLastDim<arith::OrIOp>(fb, pendingCommits);
+        pendingBuffers =
+            convertAndBroadcast(fb, pendingBuffers, {0, 1}, writeTrackingType);
+        Value trackMask =
+            arith::AndIOp::create(fb, barriersEqBar, pendingBuffers);
+        Value writeTrackingOne =
+            tti::createConstIntTensor(fb, fb.getLoc(), 1, writeTrackingType);
+        Value newTracking = arith::SelectOp::create(
+            fb, trackMask, writeTrackingOne, writeTracking);
+        createCTAScopedStoreScratchMemory(fb, fb.getLoc(), writeTrackingPtr,
+                                          newTracking, writeTrackingType,
+                                          recipientCTAs);
+
+        outstandingCommits = arith::SelectOp::create(
+            fb, pendingCommits, zeroCommits, outstandingCommits);
+        tti::createStoreScratchMemory(fb, fb.getLoc(), outstandingCommitsPtr,
+                                      outstandingCommits, commitsType,
+                                      /*currentCTAOnly=*/true);
+
+        fb.setInsertionPointToEnd(thenBlock);
+        triton::ReturnOp::create(fb);
+      });
+}
+
 void FunctionBuilder::createClearBarrierWriteTrackingCall(
     ImplicitLocOpBuilder &b, Value mbar, Value pred, MemType memType,
     Operation *insertPoint) {

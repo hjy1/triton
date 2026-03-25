@@ -215,6 +215,13 @@ public:
       info->operandEffects.emplace_back(MemEffectsOpInfo::Effects::Read,
                                         storeOp.getSrc());
     }
+    if (auto arriveOp = dyn_cast<ttng::AsyncCopyMbarrierArriveOp>(op)) {
+      info.emplace();
+      info->trackingKind = MemEffectsOpInfo::TrackingKind::Barrier;
+      info->barriers.push_back(
+          {arriveOp.getBarrier(), nullptr, arriveOp.getNoIncrement() ? 1 : 0,
+           MemEffectsOpInfo::BarrierTrackingMode::PendingAsyncWrites});
+    }
     if (auto gatherOp = dyn_cast<ttng::AsyncTMAGatherOp>(op)) {
       info.emplace();
       info->trackingKind = MemEffectsOpInfo::TrackingKind::Barrier;

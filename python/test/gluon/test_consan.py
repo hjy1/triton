@@ -408,6 +408,47 @@ def test_async_copy(FAILURE, device, run_wrapper, monkeypatch, num_ctas):
 
 
 @pytest.mark.skipif(not is_cuda() or torch.cuda.get_device_capability()[0] < 9, reason="Requires ampere or newer")
+def test_async_copy_mbarrier_arrive(device, run_wrapper, monkeypatch, num_ctas):
+    if run_wrapper:
+        result = run_in_process(test_async_copy_mbarrier_arrive, (device, False, monkeypatch, num_ctas))
+        assert result.exc is None
+        assert result.driver_stderr_output == ""
+        return
+
+    monkeypatch.setenv("TRITON_INSTRUMENTATION_MODE", "consan")
+    monkeypatch.setenv("CUDA_LAUNCH_BLOCKING", "1")
+    knobs.refresh_knobs()
+
+    @gluon.jit
+    def kernel(input, output):
+        block_m: ttgl.constexpr = XBLOCK * ttgl.num_ctas()
+        cga_layout: ttgl.constexpr = default_cga_layout(ttgl.num_ctas(), 2)
+        smem_layout: ttgl.constexpr = ttgl.NVMMASharedLayout(swizzle_byte_width=128, element_bitwidth=16, rank=2,
+                                                             cga_layout=cga_layout)
+        smem = ttgl.allocate_shared_memory(ttgl.float16, [block_m, XBLOCK], smem_layout)
+        bar = mbarrier.allocate_mbarrier()
+        mbarrier.init(bar, count=1)
+        blocked_layout: ttgl.constexpr = ttgl.BlockedLayout(size_per_thread=[1, XBLOCK], threads_per_warp=[32, 1],
+                                                            warps_per_cta=[4, 1], order=[0, 1], cga_layout=cga_layout)
+        offs_m = ttgl.arange(0, block_m, layout=ttgl.SliceLayout(dim=1, parent=blocked_layout))[:, None]
+        offs_n = ttgl.arange(0, XBLOCK, layout=ttgl.SliceLayout(dim=0, parent=blocked_layout))[None, :]
+        offs = offs_m * XBLOCK + offs_n
+        ampere.async_copy.async_copy_global_to_shared(smem, input + offs)
+        ampere.async_copy.mbarrier_arrive(bar, increment_count=True)
+        ampere.async_copy.commit_group()
+        mbarrier.arrive(bar, count=1)
+        mbarrier.wait(bar, 0, deps=[smem])
+        val = smem.load(blocked_layout)
+        ttgl.store(output + offs, val)
+        mbarrier.invalidate(bar)
+
+    input = torch.randn((XBLOCK.value * num_ctas, XBLOCK.value), device=device, dtype=torch.float16)
+    output = torch.empty_like(input)
+    kernel[(1, )](input, output, num_warps=4, num_ctas=num_ctas)
+    torch.testing.assert_close(output, input)
+
+
+@pytest.mark.skipif(not is_cuda() or torch.cuda.get_device_capability()[0] < 9, reason="Requires ampere or newer")
 @pytest.mark.parametrize("FAILURE", [True, False])
 def test_tma_store(FAILURE, device, run_wrapper, monkeypatch, num_ctas):
     if run_wrapper:

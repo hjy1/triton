@@ -155,23 +155,28 @@ Value currentCTAMask(ImplicitLocOpBuilder &b) {
                                ctaId);
 }
 
-Value getRecipientCTAs(ImplicitLocOpBuilder &b, Operation *op) {
-  if (auto arriveOp = dyn_cast<ttng::ArriveBarrierOp>(op)) {
-    auto barrierTy = cast<ttg::MemDescType>(arriveOp.getAlloc().getType());
-    auto kBlock = StringAttr::get(op->getContext(), "block");
-    uint16_t broadcastMask =
-        toLinearLayout(barrierTy).getFreeVariableMasks().lookup(kBlock);
-    if (broadcastMask) {
-      int numCTAs = ttg::lookupNumCTAs(b);
-      auto encoding = ttng::getTMAMulticastMaskEncoding(numCTAs, broadcastMask);
-      Value ctaId = tti::ExperimentalClusterCTAIdOp::create(b, b.getLoc());
-      Value leaderCTA = arith::AndIOp::create(
-          b, ctaId, arith::ConstantIntOp::create(b, encoding.fixedBits, 32));
-      return arith::ShLIOp::create(b, arith::ConstantIntOp::create(b, 1, 32),
-                                   leaderCTA);
-    }
-    return currentCTAMask(b);
+Value getBarrierRecipientCTAs(ImplicitLocOpBuilder &b, Value barrier) {
+  auto barrierTy = cast<ttg::MemDescType>(barrier.getType());
+  auto kBlock = StringAttr::get(barrier.getContext(), "block");
+  uint16_t broadcastMask =
+      toLinearLayout(barrierTy).getFreeVariableMasks().lookup(kBlock);
+  if (broadcastMask) {
+    int numCTAs = ttg::lookupNumCTAs(b);
+    auto encoding = ttng::getTMAMulticastMaskEncoding(numCTAs, broadcastMask);
+    Value ctaId = tti::ExperimentalClusterCTAIdOp::create(b, b.getLoc());
+    Value leaderCTA = arith::AndIOp::create(
+        b, ctaId, arith::ConstantIntOp::create(b, encoding.fixedBits, 32));
+    return arith::ShLIOp::create(b, arith::ConstantIntOp::create(b, 1, 32),
+                                 leaderCTA);
   }
+  return currentCTAMask(b);
+}
+
+Value getRecipientCTAs(ImplicitLocOpBuilder &b, Operation *op) {
+  if (auto arriveOp = dyn_cast<ttng::ArriveBarrierOp>(op))
+    return getBarrierRecipientCTAs(b, arriveOp.getAlloc());
+  if (auto arriveOp = dyn_cast<ttng::AsyncCopyMbarrierArriveOp>(op))
+    return getBarrierRecipientCTAs(b, arriveOp.getBarrier());
 
   SmallVector<uint16_t> broadcastMasks;
   if (auto commitOp = dyn_cast<ttng::TCGen5CommitOp>(op)) {
@@ -451,6 +456,11 @@ private:
           funcBuilder.createTrackBarrierWriteForBufferCall(
               b, barrier, effect.buf, effect.length, combinedPred, memType, op);
         }
+      } else if (barrierInfo.trackingMode ==
+                 MemEffectsOpInfo::BarrierTrackingMode::PendingAsyncWrites) {
+        funcBuilder.createTrackOutstandingCommitsForBarrierCall(
+            b, barrier, baseThread, combinedPred, CommitKind::AsyncCp,
+            MemType::SHARED_MEM, op, recipientCTAs);
       }
       if (barrierInfo.count > 0) {
         funcBuilder.createVerifyBarrierArriveCall(
