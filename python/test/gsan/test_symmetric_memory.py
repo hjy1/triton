@@ -55,7 +55,6 @@ def _single_cta_atomic_sync_kernel(counter_ptr, payload_ptr, peer_payload_ptr, n
 @triton.jit
 def _single_cta_no_atomic_sync_kernel(payload_ptr, peer_payload_ptr, seen_peer_ptr, payload_value):
     tl.store(payload_ptr, payload_value)
-    nanosleep(100)
     seen_peer = tl.load(peer_payload_ptr)
     tl.store(seen_peer_ptr, seen_peer)
 
